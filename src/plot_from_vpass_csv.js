@@ -7,20 +7,22 @@
  *    (フォルダを開いたときのURL末尾: https://drive.google.com/drive/folders/【ここ】)
  * 3. CATEGORY_DICT に、店舗名(部分一致)と分類の対応をどんどん追加していく
  * 4. classifyExpenses を実行(初回はGoogleアカウントの権限承認が必要)
- * 5. 実行後、スプレッドシートに「明細」「集計」シートが作成され、
- *    「集計」シートに円グラフが表示される
+ * 5. 実行後、スプレッドシートに「明細」「集計」「推移」シートが作成される
+ *    - 「集計」シート: CSV(ファイル)ごと・全ファイル合計の分類別円グラフ
+ *    - 「推移」シート: ファイルごとの分類別支出推移の積み上げ棒グラフ
  */
 
 // ===== 設定 =====
 
 // CSVが保存されているDriveフォルダのID
-const FOLDER_ID = '1cJ7kgvMNijB1JUmcoYxiNaA0101wt8SD';
+const FOLDER_ID = 'フォルダidをここに入力';
 
 // CSVの文字コード(Vpassのダウンロードcsvは Shift_JIS のことが多い。文字化けする場合はUTF-8に変更)
 const CSV_ENCODING = 'Shift_JIS';
 
 const DETAIL_SHEET_NAME = '明細';
 const SUMMARY_SHEET_NAME = '集計';
+const TRANSITION_SHEET_NAME = '推移';
 
 // 「集計」シートで、ファイル1つ分の表+円グラフに割り当てる行数(ブロック間の間隔)
 const SUMMARY_ROWS_PER_BLOCK = 25;
@@ -148,7 +150,9 @@ function classifyExpenses() {
   writeDetailSheet(transactions);
   const summary = writeSummarySheet(transactions, files);
   drawPieCharts(summary);
-  drawTransitionChart(summary.sheet, summary.transition);
+
+  const transitionSummary = writeTransitionSheet(transactions, files);
+  drawTransitionChart(transitionSummary.sheet, transitionSummary.transition);
 }
 
 // ===== CSV読み込み =====
@@ -249,11 +253,15 @@ function writeSummarySheet(transactions, files) {
   const totalStartRow = files.length * SUMMARY_ROWS_PER_BLOCK + 1;
   blocks.push(writeSummaryBlock(sheet, totalStartRow, '全ファイル合計', transactions));
 
-  // さらにその下に、ファイルごとの推移を見るためのピボット表を書き出す
-  const transitionStartRow = (files.length + 1) * SUMMARY_ROWS_PER_BLOCK + 1;
-  const transition = writeTransitionSection(sheet, transitionStartRow, files, transactions);
+  return { sheet, blocks };
+}
 
-  return { sheet, blocks, transition };
+// 「推移」シート: 円グラフの集計(「集計」シート)とは別タブに、
+// ファイルごとの分類別推移の表+積み上げ棒グラフを書き出す
+function writeTransitionSheet(transactions, files) {
+  const sheet = getOrCreateSheet(TRANSITION_SHEET_NAME);
+  const transition = writeTransitionSection(sheet, 1, files, transactions);
+  return { sheet, transition };
 }
 
 function writeSummaryBlock(sheet, startRow, label, transactions) {
@@ -337,15 +345,22 @@ function drawPieCharts(summary) {
 // ===== 積み上げ棒グラフ(推移) =====
 
 function drawTransitionChart(sheet, transition) {
+  // 既存のグラフを削除してから作り直す(再実行しても増殖しないように)
+  sheet.getCharts().forEach(chart => sheet.removeChart(chart));
+
   if (transition.rowCount === 0) return; // ファイルが無ければ何もしない
 
   const dataRange = sheet.getRange(transition.headerRow, 1, transition.rowCount + 1, transition.columnCount);
   const chart = sheet.newChart()
     .setChartType(Charts.ChartType.COLUMN)
     .addRange(dataRange)
+    // 1行目(ファイル名, 分類1, 分類2, ...)をヘッダーとして扱い、
+    // 各分類名が積み上げ棒グラフのレジェンドに表示されるようにする
+    .setNumHeaders(1)
     .setPosition(transition.chartAnchorRow, 1, 0, 0)
     .setOption('title', 'ファイルごとの分類別支出推移')
     .setOption('isStacked', true)
+    .setOption('legend', { position: 'right' })
     .setOption('width', 600)
     .setOption('height', 350)
     .build();
