@@ -1,0 +1,538 @@
+/**
+ * 楽天カード利用明細CSVを自動仕訳して円グラフ化するスクリプト(プロトタイプ)
+ *
+ * 【Vpass版(plot_from_vpass_csv.js)との違い】
+ * CSVの列構成が異なる(A列=日付, B列=店舗名 は共通だが、金額はC列ではなくE列)。
+ * 同じスプレッドシートに Vpass版・楽天版の両方を貼り付けても衝突しないよう、
+ * 定数名・関数名にはすべて "Rakuten" を付与し、シート名も専用のものを使う。
+ *
+ * 【事前準備】
+ * 1. このコードをGoogleスプレッドシートの「拡張機能 > Apps Script」のエディタに貼り付ける
+ * 2. RAKUTEN_FOLDER_ID に、月次CSVが入っているGoogle DriveフォルダのIDを設定する
+ *    (フォルダを開いたときのURL末尾: https://drive.google.com/drive/folders/【ここ】)
+ * 3. RAKUTEN_CATEGORY_DICT に、店舗名(部分一致)と分類の対応をどんどん追加していく
+ * 4. classifyExpensesRakuten を実行(初回はGoogleアカウントの権限承認が必要)
+ * 5. 実行後、スプレッドシートに「楽天明細」「楽天集計」「楽天推移」シートが作成される
+ *    - 「楽天集計」シート: CSV(ファイル)ごと・全ファイル合計の分類別円グラフ
+ *    - 「楽天推移」シート: ファイルごとの分類別支出推移の積み上げ棒グラフ
+ */
+
+// ===== 設定 =====
+
+// CSVが保存されているDriveフォルダのID
+const RAKUTEN_FOLDER_ID = 'フォルダidをここに入力';
+
+// CSVの文字コード(楽天カードのダウンロードcsvは UTF-8 のことが多い。文字化けする場合はShift_JISに変更)
+const RAKUTEN_CSV_ENCODING = 'UTF-8';
+
+const RAKUTEN_DETAIL_SHEET_NAME = '楽天明細';
+const RAKUTEN_SUMMARY_SHEET_NAME = '楽天集計';
+const RAKUTEN_TRANSITION_SHEET_NAME = '楽天推移';
+
+// 「楽天集計」シートで、ファイル1つ分の表+円グラフに割り当てる行数(ブロック間の間隔)
+const RAKUTEN_SUMMARY_ROWS_PER_BLOCK = 25;
+
+// 店舗名(部分一致)→ 分類 の対応表。上から順にチェックし、最初にマッチしたものを採用
+// 分類は以下の6種類固定: スーパー・コンビニ・自販機 / 外食 / 交通費 / 光熱費 / 娯楽・嗜好品 / 未分類
+// ※クレジットカードCSVは英数字が全角(ＡＢＣ等)で入っていることが多いため、
+//   半角・全角・カタカナ表記ゆれをそれぞれキーとして用意している
+const RAKUTEN_CATEGORY_DICT = {
+  // ---- スーパー・コンビニ・自販機 ----
+  'イオン': 'スーパー・コンビニ・自販機',
+  'セブン': 'スーパー・コンビニ・自販機',
+  'ファミリーマート': 'スーパー・コンビニ・自販機',
+  'ローソン': 'スーパー・コンビニ・自販機',
+  'ミニストップ': 'スーパー・コンビニ・自販機',
+  '西友': 'スーパー・コンビニ・自販機',
+  'ライフ': 'スーパー・コンビニ・自販機',
+  'いなげや': 'スーパー・コンビニ・自販機',
+  '東急ストア': 'スーパー・コンビニ・自販機',
+  'ハックドラッグ': 'スーパー・コンビニ・自販機',
+  '飲料自販機': 'スーパー・コンビニ・自販機',
+  'コカコ': 'スーパー・コンビニ・自販機', // コカコーラボトラーズ(自販機)
+  'コカ・コーラ': 'スーパー・コンビニ・自販機', // 「コカ・コーラ Cmode 自販機」など(・区切り表記)
+  'ダイドー': 'スーパー・コンビニ・自販機', // ダイドードリンコの自販機
+  'エキナカ自販機': 'スーパー・コンビニ・自販機', // JR東日本 acure など
+  'ＮｅｗＤａｙｓ': 'スーパー・コンビニ・自販機', // JR東日本の駅ナカコンビニ
+  'キヨスク': 'スーパー・コンビニ・自販機', // グランドキヨスク・ベルマートキヨスク・東海キヨスク等
+  'おどや': 'スーパー・コンビニ・自販機',
+  'ハナマサ': 'スーパー・コンビニ・自販機', // 肉のハナマサ
+  'カルディ': 'スーパー・コンビニ・自販機',
+  '食べチョク': 'スーパー・コンビニ・自販機', // 産直野菜通販
+  'ドウェイ': 'スーパー・コンビニ・自販機', // フードウェイ(表記ゆれで先頭の長音記号がずれることがあるため末尾側で判定)
+  'フレッシュオ': 'スーパー・コンビニ・自販機', // フレッシュオーワダ(八百屋)
+  'Ｆｉｔ　Ｃａｒｅ　ＤＥＰＯＴ': 'スーパー・コンビニ・自販機',
+  'アピタ': 'スーパー・コンビニ・自販機',
+  '大野屋': 'スーパー・コンビニ・自販機',
+
+  // ---- 外食 ----
+  'マクドナルド': '外食',
+  'スターバックス': '外食',
+  'ドトール': '外食',
+  '吉野家': '外食',
+  'すき家': '外食',
+  'サイゼリヤ': '外食',
+  'ガスト': '外食',
+  '丸亀製麺': '外食',
+  '味奈登庵': '外食',
+  'ブドウヤ': '外食',
+  'ウーバー': '外食', // ウーバーイーツ
+  'UBER': '外食',    // UBER ONE MEMBERSHIP など半角表記
+  'ＣＲＩＳＰ': '外食', // CRISP SALAD WORKS(全角表記)
+  'クリスプ': '外食',   // クリスプサラダワークス(カタカナ表記)
+  '上星商店': '外食',
+  'いちごの樹': '外食',
+  'キッチンオリジン': '外食',
+  '市場食堂': '外食',
+  'コウジクラ': '外食',
+  'ＨＯＮＥＹＢＥＥ': '外食',
+  '東京土山人': '外食',
+  '鉄板ステーキ＆ハンバーグ': '外食',
+  'ＳＵＳＨＩ　ＳＯＵＬ': '外食',
+  '新宿さぼてん': '外食',
+  '四代目菊川': '外食',
+  '金伝丸': '外食', // らーめん金伝丸
+  'シェイクシャック': '外食',
+  '銚子丸': '外食', // すし銚子丸
+  'オムライスのひまわり': '外食',
+  'ケンタッキー': '外食',
+  'マルデナポリ': '外食',
+  'はま寿司': '外食',
+  'スシロ': '外食', // スシロー(長音記号が「—」表記になることがあるため末尾を含めない)
+  'こがね食堂': '外食',
+  'イカリヤシヨクドウ': '外食',
+  'ＡＦＵＲＩ': '外食',
+  'ＣｏＣｏ壱番屋': '外食',
+  'ふふふあん': '外食',
+  'アミーゴ': '外食', // イタリアンバー アミーゴ
+  'ドンク': '外食', // ベーカリーチェーン
+  'Ｒ　Ｂａｋｅｒ': '外食',
+  'デリフランス': '外食',
+  'ｍｍＴＨＡＩ': '外食',
+  'バーガージョーズ': '外食',
+  'プレミアムカルビ': '外食',
+  '伝ＯＮ　ＴＨＥ　ＴＡＢＬＥ': '外食',
+  'ｔｏ　ｙｏｕｒ　Ｆａｒｍ': '外食', // フレッシュオーワダ直営のサラダ専門店
+  '三渓園茶寮': '外食',
+  'プレジデン': '外食', // ベーカリー「プレジデンテ」
+  'シュウマイ': '外食', // 毎週シュウマイ/マイシュウシュウマイ
+  'エチゼンカニ': '外食',
+  'たか松': '外食',
+  '神戸スパイス': '外食',
+  '駅弁にぎわい': '外食',
+  'モスのネット注文': '外食',
+  'ＭＲ．ＬＥＥ': '外食',
+  'ポンパドウル': '外食', // ベーカリーチェーン
+  'ドミノピザ': '外食',
+  '回転寿司みさき': '外食',
+  'そば処': '外食',
+  'ブトウキヨウ': '外食', // GARB TOKYO(カフェ&レストラン)の長音記号ゆれ表記
+
+  // ---- 交通費 ----
+  'JR': '交通費',
+  'ENEOS': '交通費',
+  'ＥＮＥＯＳ': '交通費',
+  '出光': '交通費',
+  'Suica': '交通費',
+  'PASMO': '交通費',
+  'タイムズ': '交通費',
+  'ETC': '交通費',
+  'ＥＴＣ': '交通費', // 全角表記
+  'キグナス': '交通費', // ガソリンスタンド
+  '中日本高速道路': '交通費',
+  'Ｓｕｉｃａ': '交通費', // モバイルSuica(Apple)など全角表記
+  'タクシー': '交通費',
+  '三和交通': '交通費',
+  '交通利用': '交通費', // 「遠鉄バス／交通利用」など
+  '彌榮自動車': '交通費', // 京都のタクシー会社(通称やさか交通)
+  '６２５タクシ': '交通費', // 「株式会社625タクシー横浜」(長音記号の表記ゆれを避けて手前で判定)
+
+  // ---- 光熱費 ----
+  '東京電力': '光熱費',
+  '東京ガス': '光熱費',
+  '東京都水道局': '光熱費',
+  '水道': '光熱費', // 「〇〇市水道料金」等
+  'ガスリョウキン': '光熱費', // 「〇〇　ガスリョウキン」表記
+  'Ｕ−ＰＯＷＥＲ': '光熱費', // 電力会社
+
+  // ---- 娯楽・嗜好品 ----
+  'Amazon': '娯楽・嗜好品',
+  'ＡＭＡＺＯＮ': '娯楽・嗜好品', // 全角表記
+  'ＡＰＰＬＥ': '娯楽・嗜好品',   // App Store/iCloud等のサブスク
+  'TSUTAYA': '娯楽・嗜好品',
+  'ゲオ': '娯楽・嗜好品',
+  'ヨドバシカメラ': '娯楽・嗜好品',
+  'ルミネ': '娯楽・嗜好品',
+  '伊勢丹': '娯楽・嗜好品',
+  'キュービックプラザ': '娯楽・嗜好品',
+  'キュ−ビックプラザ': '娯楽・嗜好品', // ダッシュ記号違いの表記ゆれ
+  'ノースポート': '娯楽・嗜好品',
+  'トレッサ': '娯楽・嗜好品',
+  'ランドマーク': '娯楽・嗜好品',
+  'サクラステージ': '娯楽・嗜好品',
+  'ブルク': '娯楽・嗜好品', // 映画館
+  'セリア': '娯楽・嗜好品',
+  'かたぎり塾': '娯楽・嗜好品', // パーソナルトレーニングジム
+  'ホテル': '娯楽・嗜好品',
+  'ＮＥＷｏＭａｎ': '娯楽・嗜好品',
+  'ジョイナス': '娯楽・嗜好品',
+  'シァル横浜': '娯楽・嗜好品',
+  'メイワン': '娯楽・嗜好品', // 浜松駅の商業施設
+  'そごう': '娯楽・嗜好品',
+  '高島屋': '娯楽・嗜好品',
+  '三越': '娯楽・嗜好品',
+  '横浜モアーズ': '娯楽・嗜好品',
+  'ワールドポーターズ': '娯楽・嗜好品',
+  '三井アウトレットパーク': '娯楽・嗜好品',
+  'ＭＡＲＫ　ＩＳ': '娯楽・嗜好品',
+  'クイズミナトミライ': '娯楽・嗜好品', // 「マークイズみなとみらい」の長音記号ゆれ表記
+  'ブリックスクエア': '娯楽・嗜好品',
+  '日吉東急アベニュー': '娯楽・嗜好品',
+  'ヒヨシトウキユウアベニユ': '娯楽・嗜好品', // 上記のカナ表記ゆれ(長音記号を含まない箇所で判定)
+  'アトレ': '娯楽・嗜好品',
+  '東急百貨店': '娯楽・嗜好品',
+  'ユナイテッド・シネマ': '娯楽・嗜好品',
+  'Ｔジョイ': '娯楽・嗜好品', // 映画館(T・ジョイ)
+  'アソビュー': '娯楽・嗜好品',
+  'Ｐｒｏｇａｔｅ': '娯楽・嗜好品',
+  'ダイソー': '娯楽・嗜好品',
+  'ニトリ': '娯楽・嗜好品',
+  'ユニクロ': '娯楽・嗜好品',
+  'エディオン': '娯楽・嗜好品',
+  '三溪園': '娯楽・嗜好品', // 庭園の入園料等(「三渓園茶寮」は外食に分類)
+  'ハンマーヘッド': '娯楽・嗜好品',
+  'シヨツプアンドレス': '娯楽・嗜好品', // 「ハンマーヘッド SHOP&REST」のカナ表記ゆれ
+  'コーナン': '娯楽・嗜好品',
+  '道の駅': '娯楽・嗜好品',
+  '海ほたる': '娯楽・嗜好品',
+  'アイハーブ': '娯楽・嗜好品',
+  'ラクテントラベル': '娯楽・嗜好品',
+  '鍵善良房': '娯楽・嗜好品',
+  'パティスリ': '娯楽・嗜好品', // 各種パティスリー(洋菓子店)
+  'コージーコーナー': '娯楽・嗜好品',
+  '亀屋万年堂': '娯楽・嗜好品',
+  'エトモ': '娯楽・嗜好品', // etomo綱島(カナ表記)
+  'ｅｔｏｍｏ': '娯楽・嗜好品', // etomo綱島(全角アルファベット表記)
+  'クプラザ': '娯楽・嗜好品', // 「ランドマークプラザ」の長音記号ゆれ表記
+  'デンハウスミナトミライ': '娯楽・嗜好品', // ガーデンハウスみなとみらい
+  '東急スクエア': '娯楽・嗜好品',
+  '阪神百貨店': '娯楽・嗜好品',
+  '横浜ベイクオーター': '娯楽・嗜好品',
+  'ＰＩＥＲＲＥ　ＭＡＲＣＯＬＩＮＩ': '娯楽・嗜好品',
+  '半兵衛麸': '娯楽・嗜好品', // 京都の老舗麸店
+  'エキマルシェ': '娯楽・嗜好品',
+  'ポルタ': '娯楽・嗜好品', // 京都ポルタなど
+  'ＡＳＴＹ': '娯楽・嗜好品',
+  'サイト高崎': '娯楽・嗜好品', // イーサイト高崎
+  'ＰＬＵＳＴＡ': '娯楽・嗜好品',
+  '遠鉄百貨店': '娯楽・嗜好品',
+  '新丸ビル': '娯楽・嗜好品',
+  '丸の内ビルディング': '娯楽・嗜好品',
+  'グランスタ': '娯楽・嗜好品', // 東京駅グランスタ
+  '渋谷ストリーム': '娯楽・嗜好品',
+  'ロンロン': '娯楽・嗜好品',
+  'グツド　ネイチヤ': '娯楽・嗜好品', // Good Nature Station
+
+  // 必要に応じて追加していく
+};
+
+const RAKUTEN_UNCLASSIFIED_LABEL = '未分類';
+
+// 積み上げ棒グラフ・推移表で使う分類の並び順(固定)
+const RAKUTEN_CATEGORY_ORDER = ['スーパー・コンビニ・自販機', '外食', '交通費', '光熱費', '娯楽・嗜好品', RAKUTEN_UNCLASSIFIED_LABEL];
+
+// ===== メイン処理 =====
+
+function classifyExpensesRakuten() {
+  const folder = DriveApp.getFolderById(RAKUTEN_FOLDER_ID);
+  const files = getCsvFilesInFolderRakuten(folder);
+
+  const transactions = []; // {fileName, date, store, amount, category}
+
+  files.forEach(file => {
+    const rows = readCsvRowsRakuten(file);
+
+    rows.forEach(row => {
+      const rawDate = (row[0] || '').toString().trim();
+      if (!isDateStringRakuten(rawDate)) return; // 見出し行・合計行などはスキップ
+      const dateStr = toHalfWidthRakuten(rawDate);
+
+      const store = (row[1] || '').toString().trim();
+      const amount = parseAmountRakuten(row[4]); // 楽天カードCSVはE列(index=4)が金額
+      if (!store || isNaN(amount)) return;
+
+      transactions.push({
+        fileName: file.getName(),
+        date: dateStr,
+        store: store,
+        amount: amount,
+        category: classifyStoreRakuten(store),
+      });
+    });
+  });
+
+  writeDetailSheetRakuten(transactions);
+  const summary = writeSummarySheetRakuten(transactions, files);
+  drawPieChartsRakuten(summary);
+
+  const transitionSummary = writeTransitionSheetRakuten(transactions, files);
+  drawTransitionChartRakuten(transitionSummary.sheet, transitionSummary.transition);
+}
+
+// ===== CSV読み込み =====
+
+function readCsvRowsRakuten(file) {
+  let csvText;
+  try {
+    csvText = file.getBlob().getDataAsString(RAKUTEN_CSV_ENCODING);
+  } catch (e) {
+    // RAKUTEN_CSV_ENCODINGでの読み込みに失敗した場合、もう一方のエンコードを試す
+    const fallbackEncoding = RAKUTEN_CSV_ENCODING === 'UTF-8' ? 'Shift_JIS' : 'UTF-8';
+    csvText = file.getBlob().getDataAsString(fallbackEncoding);
+  }
+  // UTF-8のBOM(先頭の目に見えない1文字)が残っていると1行目の1列目だけ余計な文字が付くことがあるため取り除く
+  if (csvText.charCodeAt(0) === 0xFEFF) {
+    csvText = csvText.slice(1);
+  }
+  return Utilities.parseCsv(csvText);
+}
+
+function getCsvFilesInFolderRakuten(folder) {
+  // MIMEタイプでの判定は環境によって text/csv にならないことがあるため、
+  // ファイル名の拡張子(.csv)で判定する
+  const allFiles = folder.getFiles();
+  const csvFiles = [];
+  while (allFiles.hasNext()) {
+    const file = allFiles.next();
+    if (/\.csv$/i.test(file.getName())) {
+      csvFiles.push(file);
+    }
+  }
+  // ファイル名順(例: 202605.csv, 202606.csv)に並べ、集計・グラフの並び順を安定させる
+  csvFiles.sort((a, b) => a.getName().localeCompare(b.getName(), 'ja'));
+  return csvFiles;
+}
+
+function toHalfWidthRakuten(str) {
+  // 全角の数字・記号を半角に変換する(全角表記が混ざっていることがあるため)
+  const zenkakuMap = {
+    '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
+    '５': '5', '６': '6', '７': '7', '８': '8', '９': '9',
+    '／': '/', '－': '-', '．': '.', '，': ',', '￥': '¥',
+  };
+  return str.replace(/[０-９／－．，￥]/g, ch => zenkakuMap[ch] || ch);
+}
+
+function isDateStringRakuten(str) {
+  // yyyy/mm/dd, yy/mm/dd, yyyy-mm-dd など(全角数字・2桁年も許容)のみレコードとして扱う
+  const normalized = toHalfWidthRakuten(str);
+  return /^\d{2,4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(normalized);
+}
+
+function parseAmountRakuten(value) {
+  if (value === null || value === undefined) return NaN;
+  const normalized = toHalfWidthRakuten(value.toString());
+  const cleaned = normalized.replace(/[,¥\s]/g, '');
+  return Number(cleaned);
+}
+
+// ===== 分類ロジック =====
+
+function classifyStoreRakuten(store) {
+  for (const keyword in RAKUTEN_CATEGORY_DICT) {
+    if (store.indexOf(keyword) !== -1) {
+      return RAKUTEN_CATEGORY_DICT[keyword];
+    }
+  }
+  return RAKUTEN_UNCLASSIFIED_LABEL;
+}
+
+// ===== シート書き出し =====
+
+function getOrCreateSheetRakuten(name) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
+  sheet.clear();
+  return sheet;
+}
+
+function writeDetailSheetRakuten(transactions) {
+  const sheet = getOrCreateSheetRakuten(RAKUTEN_DETAIL_SHEET_NAME);
+  sheet.appendRow(['ファイル名', '日付', '店舗', '金額', '分類']);
+  const rows = transactions.map(t => [t.fileName, t.date, t.store, t.amount, t.category]);
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, 5).setValues(rows);
+  }
+}
+
+function writeSummarySheetRakuten(transactions, files) {
+  const sheet = getOrCreateSheetRakuten(RAKUTEN_SUMMARY_SHEET_NAME);
+  const blocks = [];
+
+  // ファイルごとに分類・合計金額のブロックを積み上げて書き出す
+  files.forEach((file, i) => {
+    const fileName = file.getName();
+    const fileTransactions = transactions.filter(t => t.fileName === fileName);
+    blocks.push(writeSummaryBlockRakuten(sheet, i * RAKUTEN_SUMMARY_ROWS_PER_BLOCK + 1, fileName, fileTransactions));
+  });
+
+  // 最後に全ファイル合計のブロックを追加
+  const totalStartRow = files.length * RAKUTEN_SUMMARY_ROWS_PER_BLOCK + 1;
+  blocks.push(writeSummaryBlockRakuten(sheet, totalStartRow, '全ファイル合計', transactions));
+
+  return { sheet, blocks };
+}
+
+// 「楽天推移」シート: 円グラフの集計(「楽天集計」シート)とは別タブに、
+// ファイルごとの分類別推移の表+積み上げ棒グラフを書き出す
+function writeTransitionSheetRakuten(transactions, files) {
+  const sheet = getOrCreateSheetRakuten(RAKUTEN_TRANSITION_SHEET_NAME);
+  const transition = writeTransitionSectionRakuten(sheet, 1, files, transactions);
+  return { sheet, transition };
+}
+
+function writeSummaryBlockRakuten(sheet, startRow, label, transactions) {
+  const totals = {};
+  transactions.forEach(t => {
+    totals[t.category] = (totals[t.category] || 0) + t.amount;
+  });
+
+  sheet.getRange(startRow, 1).setValue(label).setFontWeight('bold');
+  sheet.getRange(startRow + 1, 1, 1, 2).setValues([['分類', '合計金額']]);
+
+  const rows = Object.keys(totals).map(category => [category, totals[category]]);
+  if (rows.length > 0) {
+    sheet.getRange(startRow + 2, 1, rows.length, 2).setValues(rows);
+  }
+
+  return {
+    label: label,
+    headerRow: startRow + 1, // ['分類','合計金額']の見出し行
+    rowCount: rows.length,
+    chartAnchorRow: startRow + 2 + rows.length + 1,
+  };
+}
+
+function writeTransitionSectionRakuten(sheet, startRow, files, transactions) {
+  sheet.getRange(startRow, 1).setValue('ファイルごとの推移').setFontWeight('bold');
+
+  const headerRow = startRow + 1;
+  const columnCount = RAKUTEN_CATEGORY_ORDER.length + 1; // ファイル名 + 各分類
+  sheet.getRange(headerRow, 1, 1, columnCount).setValues([['ファイル名'].concat(RAKUTEN_CATEGORY_ORDER)]);
+
+  // ファイルごとに、分類の並び順(RAKUTEN_CATEGORY_ORDER)に沿って合計金額を並べる(0円の分類も含める)
+  const dataRows = files.map(file => {
+    const fileName = file.getName();
+    const totals = {};
+    transactions
+      .filter(t => t.fileName === fileName)
+      .forEach(t => {
+        totals[t.category] = (totals[t.category] || 0) + t.amount;
+      });
+    return [fileName].concat(RAKUTEN_CATEGORY_ORDER.map(category => totals[category] || 0));
+  });
+
+  if (dataRows.length > 0) {
+    sheet.getRange(headerRow + 1, 1, dataRows.length, columnCount).setValues(dataRows);
+  }
+
+  return {
+    headerRow: headerRow,
+    columnCount: columnCount,
+    rowCount: dataRows.length,
+    chartAnchorRow: headerRow + dataRows.length + 2,
+  };
+}
+
+// ===== 円グラフ =====
+
+function drawPieChartsRakuten(summary) {
+  const { sheet, blocks } = summary;
+
+  // 既存のグラフを削除してから作り直す(再実行しても増殖しないように)
+  sheet.getCharts().forEach(chart => sheet.removeChart(chart));
+
+  blocks.forEach(block => {
+    if (block.rowCount === 0) return; // データが無いファイルはグラフを描かない
+
+    const dataRange = sheet.getRange(block.headerRow, 1, block.rowCount + 1, 2);
+    const chart = sheet.newChart()
+      .setChartType(Charts.ChartType.PIE)
+      .addRange(dataRange)
+      .setPosition(block.chartAnchorRow, 1, 0, 0)
+      .setOption('title', block.label + ' の支出分類')
+      .setOption('width', 380)
+      .setOption('height', 260)
+      .build();
+
+    sheet.insertChart(chart);
+  });
+}
+
+// ===== 積み上げ棒グラフ(推移) =====
+
+function drawTransitionChartRakuten(sheet, transition) {
+  // 既存のグラフを削除してから作り直す(再実行しても増殖しないように)
+  sheet.getCharts().forEach(chart => sheet.removeChart(chart));
+
+  if (transition.rowCount === 0) return; // ファイルが無ければ何もしない
+
+  const dataRange = sheet.getRange(transition.headerRow, 1, transition.rowCount + 1, transition.columnCount);
+  const chart = sheet.newChart()
+    .setChartType(Charts.ChartType.COLUMN)
+    .addRange(dataRange)
+    // 1行目(ファイル名, 分類1, 分類2, ...)をヘッダーとして扱い、
+    // 各分類名が積み上げ棒グラフのレジェンドに表示されるようにする
+    .setNumHeaders(1)
+    .setPosition(transition.chartAnchorRow, 1, 0, 0)
+    .setOption('title', 'ファイルごとの分類別支出推移')
+    .setOption('isStacked', true)
+    .setOption('legend', { position: 'right' })
+    .setOption('width', 600)
+    .setOption('height', 350)
+    .build();
+
+  sheet.insertChart(chart);
+}
+
+// ===== デバッグ用 =====
+
+/**
+ * フォルダ内の最初のCSVファイルの先頭10行(A〜E列の生データ)をログに出力する。
+ * classifyExpensesRakuten実行後もシートが空の場合、この関数を実行してログを確認すると
+ * 「日付列がどんな文字列になっているか」「列がずれていないか(特にE列=金額)」を切り分けられる。
+ * ログの確認方法: Apps Scriptエディタで実行後、左側メニューの「実行数」から
+ * 該当の実行を開くか、上部メニューの「表示 > ログ」で確認できる。
+ */
+function debugPrintFirstRowsRakuten() {
+  const folder = DriveApp.getFolderById(RAKUTEN_FOLDER_ID);
+
+  // まずフォルダ内の全ファイルとMIMEタイプを一覧表示(想定外のファイルが無いか確認用)
+  const allFiles = folder.getFiles();
+  let fileCount = 0;
+  while (allFiles.hasNext()) {
+    const file = allFiles.next();
+    Logger.log(`ファイル: ${file.getName()} / MimeType: ${file.getMimeType()}`);
+    fileCount++;
+  }
+  if (fileCount === 0) {
+    Logger.log('フォルダ内にファイルが1つもありません。RAKUTEN_FOLDER_IDや対象フォルダを確認してください。');
+    return;
+  }
+
+  const csvFiles = getCsvFilesInFolderRakuten(folder);
+  if (csvFiles.length === 0) {
+    Logger.log('.csv拡張子のファイルが見つかりませんでした。上記のファイル名一覧を確認してください。');
+    return;
+  }
+
+  const file = csvFiles[0];
+  Logger.log('対象ファイル: ' + file.getName());
+  const rows = readCsvRowsRakuten(file);
+  rows.slice(0, 10).forEach((row, i) => {
+    Logger.log(`行${i}: A=[${row[0]}] B=[${row[1]}] C=[${row[2]}] D=[${row[3]}] E=[${row[4]}] isDate=${isDateStringRakuten((row[0] || '').toString().trim())}`);
+  });
+}
