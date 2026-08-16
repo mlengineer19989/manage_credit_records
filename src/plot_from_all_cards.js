@@ -23,7 +23,7 @@
  *    (plot_from_vpass_csv.js / plot_from_rakten_csv.js と内容を揃えておくこと)
  * 4. classifyExpensesAllCards を実行(初回はGoogleアカウントの権限承認が必要)
  * 5. 実行後、スプレッドシートに以下のシートが作成される
- *    - 「明細」「集計」「推移」: Vpass単体の集計(plot_from_vpass_csv.js相当)
+ *    - 「Vpass明細」「Vpass集計」「Vpass推移」: Vpass単体の集計(plot_from_vpass_csv.js相当)
  *    - 「楽天明細」「楽天集計」「楽天推移」: 楽天カード単体の集計(plot_from_rakten_csv.js相当)
  *    - 「全体明細」「全体集計」「全体推移」: 年月ごとにVpass+楽天カードを合算した集計
  */
@@ -40,10 +40,10 @@ const ALL_RAKUTEN_FOLDER_ID = 'フォルダidをここに入力';
 const ALL_VPASS_CSV_ENCODING = 'Shift_JIS';
 const ALL_RAKUTEN_CSV_ENCODING = 'UTF-8';
 
-// Vpass単体の集計タブ(plot_from_vpass_csv.jsと同じシート名)
-const ALL_VPASS_DETAIL_SHEET_NAME = '明細';
-const ALL_VPASS_SUMMARY_SHEET_NAME = '集計';
-const ALL_VPASS_TRANSITION_SHEET_NAME = '推移';
+// Vpass単体の集計タブ
+const ALL_VPASS_DETAIL_SHEET_NAME = 'Vpass明細';
+const ALL_VPASS_SUMMARY_SHEET_NAME = 'Vpass集計';
+const ALL_VPASS_TRANSITION_SHEET_NAME = 'Vpass推移';
 
 // 楽天カード単体の集計タブ(plot_from_rakten_csv.jsと同じシート名)
 const ALL_RAKUTEN_DETAIL_SHEET_NAME = '楽天明細';
