@@ -510,10 +510,12 @@ function writeTransitionSection(sheet, startRow, files, transactions) {
   sheet.getRange(startRow, 1).setValue('ファイルごとの推移').setFontWeight('bold');
 
   const headerRow = startRow + 1;
-  const columnCount = CATEGORY_ORDER.length + 1; // ファイル名 + 各分類
-  sheet.getRange(headerRow, 1, 1, columnCount).setValues([['ファイル名'].concat(CATEGORY_ORDER)]);
+  const chartColumnCount = CATEGORY_ORDER.length + 1; // ファイル名 + 各分類(グラフの積み上げ対象)
+  const columnCount = chartColumnCount + 1; // 上記 + 合計列
+  sheet.getRange(headerRow, 1, 1, columnCount).setValues([['ファイル名'].concat(CATEGORY_ORDER).concat(['合計'])]);
 
-  // ファイルごとに、分類の並び順(CATEGORY_ORDER)に沿って合計金額を並べる(0円の分類も含める)
+  // ファイルごとに、分類の並び順(CATEGORY_ORDER)に沿って合計金額を並べ(0円の分類も含める)、
+  // 一番右の列にはそのファイルの合計金額を追加する
   const dataRows = files.map(file => {
     const fileName = file.getName();
     const totals = {};
@@ -522,7 +524,9 @@ function writeTransitionSection(sheet, startRow, files, transactions) {
       .forEach(t => {
         totals[t.category] = (totals[t.category] || 0) + t.amount;
       });
-    return [fileName].concat(CATEGORY_ORDER.map(category => totals[category] || 0));
+    const categoryAmounts = CATEGORY_ORDER.map(category => totals[category] || 0);
+    const rowTotal = categoryAmounts.reduce((sum, amount) => sum + amount, 0);
+    return [fileName].concat(categoryAmounts).concat([rowTotal]);
   });
 
   if (dataRows.length > 0) {
@@ -531,7 +535,7 @@ function writeTransitionSection(sheet, startRow, files, transactions) {
 
   return {
     headerRow: headerRow,
-    columnCount: columnCount,
+    columnCount: chartColumnCount, // 積み上げ棒グラフには合計列を含めない
     rowCount: dataRows.length,
     chartAnchorRow: headerRow + dataRows.length + 2,
   };

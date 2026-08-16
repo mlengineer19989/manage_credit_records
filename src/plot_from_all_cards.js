@@ -646,16 +646,18 @@ function writeSummaryBlockAllCards(sheet, startRow, label, transactions) {
 }
 
 // 推移シートを書き出す汎用関数。groupKeys(ファイル名 or 年月)を行、
-// ALL_CATEGORY_ORDERの各分類を列とする表を書き出す。
+// ALL_CATEGORY_ORDERの各分類を列とする表を書き出す。一番右には行合計(グループごとの合計金額)の列を追加する。
 function writeTransitionSheetGroupedAllCards(sheetName, transactions, groupKeys, groupLabelFn, groupKeyFn, groupColumnLabel) {
   const sheet = getOrCreateSheetAllCards(sheetName);
   sheet.getRange(1, 1).setValue(groupColumnLabel + 'ごとの推移').setFontWeight('bold');
 
   const headerRow = 2;
-  const columnCount = ALL_CATEGORY_ORDER.length + 1; // groupColumnLabel + 各分類
-  sheet.getRange(headerRow, 1, 1, columnCount).setValues([[groupColumnLabel].concat(ALL_CATEGORY_ORDER)]);
+  const chartColumnCount = ALL_CATEGORY_ORDER.length + 1; // groupColumnLabel + 各分類(グラフの積み上げ対象)
+  const columnCount = chartColumnCount + 1; // 上記 + 合計列
+  sheet.getRange(headerRow, 1, 1, columnCount).setValues([[groupColumnLabel].concat(ALL_CATEGORY_ORDER).concat(['合計'])]);
 
-  // グループごとに、分類の並び順(ALL_CATEGORY_ORDER)に沿って合計金額を並べる(0円の分類も含める)
+  // グループごとに、分類の並び順(ALL_CATEGORY_ORDER)に沿って合計金額を並べ(0円の分類も含める)、
+  // 一番右の列にはそのグループの合計金額を追加する
   const dataRows = groupKeys.map(key => {
     const totals = {};
     transactions
@@ -663,7 +665,9 @@ function writeTransitionSheetGroupedAllCards(sheetName, transactions, groupKeys,
       .forEach(t => {
         totals[t.category] = (totals[t.category] || 0) + t.amount;
       });
-    return [groupLabelFn(key)].concat(ALL_CATEGORY_ORDER.map(category => totals[category] || 0));
+    const categoryAmounts = ALL_CATEGORY_ORDER.map(category => totals[category] || 0);
+    const rowTotal = categoryAmounts.reduce((sum, amount) => sum + amount, 0);
+    return [groupLabelFn(key)].concat(categoryAmounts).concat([rowTotal]);
   });
 
   if (dataRows.length > 0) {
@@ -674,7 +678,7 @@ function writeTransitionSheetGroupedAllCards(sheetName, transactions, groupKeys,
     sheet,
     transition: {
       headerRow: headerRow,
-      columnCount: columnCount,
+      columnCount: chartColumnCount, // 積み上げ棒グラフには合計列を含めない
       rowCount: dataRows.length,
       chartAnchorRow: headerRow + dataRows.length + 2,
     },
