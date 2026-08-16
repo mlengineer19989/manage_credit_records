@@ -1,11 +1,10 @@
 /**
  * Vpass(三井住友カード)・楽天カードの両方の利用明細CSVをまとめて仕訳し、
- * 年月ごとに統合して円グラフ・積み上げ棒グラフ化するスクリプト(プロトタイプ)
+ * 「カードごと」と「年月で統合」の両方を円グラフ・積み上げ棒グラフ化するスクリプト(プロトタイプ)
  *
- * 【plot_from_vpass_csv.js / plot_from_rakten_csv.js との違い】
- * 2つのDriveフォルダ(Vpass用・楽天カード用)を読み込み、ファイル名から年月を取り出して
- * 同じ年月同士を1つの集計ブロックにまとめる。同じスプレッドシートに他の2つのスクリプトを
- * 貼り付けても衝突しないよう、定数名には "ALL_" を、関数名には "AllCards" を付与している。
+ * このスクリプト1本の実行だけで、plot_from_vpass_csv.js・plot_from_rakten_csv.js相当の
+ * カード個別の集計タブと、両カードを年月で合算した統合タブの両方が作成される
+ * (plot_from_vpass_csv.js / plot_from_rakten_csv.js を別途実行する必要はない)。
  *
  * 【対象ファイル名】
  * ・Vpass:     YYYYMM.csv                (例: 202605.csv)
@@ -15,15 +14,18 @@
  *
  * 【事前準備】
  * 1. このコードをGoogleスプレッドシートの「拡張機能 > Apps Script」のエディタに貼り付ける
+ *    (plot_from_vpass_csv.js / plot_from_rakten_csv.js を貼り付けている場合、同じプロジェクトに
+ *    追加しても衝突しないよう、定数名には "ALL_" を、関数名には "AllCards" を付与している)
  * 2. ALL_VPASS_FOLDER_ID / ALL_RAKUTEN_FOLDER_ID に、それぞれの月次CSVが入っている
  *    Google DriveフォルダのIDを設定する
  *    (フォルダを開いたときのURL末尾: https://drive.google.com/drive/folders/【ここ】)
  * 3. ALL_CATEGORY_DICT に、店舗名(部分一致)と分類の対応をどんどん追加していく
  *    (plot_from_vpass_csv.js / plot_from_rakten_csv.js と内容を揃えておくこと)
  * 4. classifyExpensesAllCards を実行(初回はGoogleアカウントの権限承認が必要)
- * 5. 実行後、スプレッドシートに「全体明細」「全体集計」「全体推移」シートが作成される
- *    - 「全体集計」シート: 年月ごと・全期間合計の分類別円グラフ
- *    - 「全体推移」シート: 年月ごとの分類別支出推移の積み上げ棒グラフ
+ * 5. 実行後、スプレッドシートに以下のシートが作成される
+ *    - 「明細」「集計」「推移」: Vpass単体の集計(plot_from_vpass_csv.js相当)
+ *    - 「楽天明細」「楽天集計」「楽天推移」: 楽天カード単体の集計(plot_from_rakten_csv.js相当)
+ *    - 「全体明細」「全体集計」「全体推移」: 年月ごとにVpass+楽天カードを合算した集計
  */
 
 // ===== 設定 =====
@@ -38,11 +40,22 @@ const ALL_RAKUTEN_FOLDER_ID = 'フォルダidをここに入力';
 const ALL_VPASS_CSV_ENCODING = 'Shift_JIS';
 const ALL_RAKUTEN_CSV_ENCODING = 'UTF-8';
 
+// Vpass単体の集計タブ(plot_from_vpass_csv.jsと同じシート名)
+const ALL_VPASS_DETAIL_SHEET_NAME = '明細';
+const ALL_VPASS_SUMMARY_SHEET_NAME = '集計';
+const ALL_VPASS_TRANSITION_SHEET_NAME = '推移';
+
+// 楽天カード単体の集計タブ(plot_from_rakten_csv.jsと同じシート名)
+const ALL_RAKUTEN_DETAIL_SHEET_NAME = '楽天明細';
+const ALL_RAKUTEN_SUMMARY_SHEET_NAME = '楽天集計';
+const ALL_RAKUTEN_TRANSITION_SHEET_NAME = '楽天推移';
+
+// Vpass+楽天カードを年月で合算した統合タブ
 const ALL_DETAIL_SHEET_NAME = '全体明細';
 const ALL_SUMMARY_SHEET_NAME = '全体集計';
 const ALL_TRANSITION_SHEET_NAME = '全体推移';
 
-// 「全体集計」シートで、年月1つ分の表+円グラフに割り当てる行数(ブロック間の間隔)
+// 「集計」系シートで、1ブロック(ファイル1つ分/年月1つ分)の表+円グラフに割り当てる行数(ブロック間の間隔)
 const ALL_SUMMARY_ROWS_PER_BLOCK = 25;
 
 // 店舗名(部分一致)→ 分類 の対応表。上から順にチェックし、最初にマッチしたものを採用
@@ -318,6 +331,34 @@ function classifyExpensesAllCards() {
   const vpassFiles = getCsvFilesInFolderAllCards(vpassFolder);
   const rakutenFiles = getCsvFilesInFolderAllCards(rakutenFolder);
 
+  const vpassTransactions = readVpassTransactionsAllCards(vpassFiles);
+  const rakutenTransactions = readRakutenTransactionsAllCards(rakutenFiles);
+
+  // ---- カード個別タブ(plot_from_vpass_csv.js / plot_from_rakten_csv.js相当) ----
+  writeCardTabsAllCards(ALL_VPASS_DETAIL_SHEET_NAME, ALL_VPASS_SUMMARY_SHEET_NAME, ALL_VPASS_TRANSITION_SHEET_NAME, vpassTransactions, vpassFiles, 'Vpass');
+  writeCardTabsAllCards(ALL_RAKUTEN_DETAIL_SHEET_NAME, ALL_RAKUTEN_SUMMARY_SHEET_NAME, ALL_RAKUTEN_TRANSITION_SHEET_NAME, rakutenTransactions, rakutenFiles, '楽天カード');
+
+  // ---- Vpass+楽天カードを年月で合算した統合タブ ----
+  const transactions = vpassTransactions.concat(rakutenTransactions);
+  // 年月(YYYYMM)の文字列としての昇順 = 時系列順。これによりVpass・楽天カードの
+  // 同じ年月のファイルが自動的に同じブロックに統合される。
+  const yearMonths = Array.from(new Set(transactions.map(t => t.yearMonth))).sort();
+
+  writeDetailSheetGenericAllCards(
+    ALL_DETAIL_SHEET_NAME,
+    ['年月', 'カード', 'ファイル名', '日付', '店舗', '金額', '分類'],
+    transactions,
+    t => [formatYearMonthLabelAllCards(t.yearMonth), t.source, t.fileName, t.date, t.store, t.amount, t.category]
+  );
+  const summary = writeSummarySheetGroupedAllCards(ALL_SUMMARY_SHEET_NAME, transactions, yearMonths, formatYearMonthLabelAllCards, t => t.yearMonth, '全期間合計');
+  drawPieChartsAllCards(summary);
+
+  const transitionSummary = writeTransitionSheetGroupedAllCards(ALL_TRANSITION_SHEET_NAME, transactions, yearMonths, formatYearMonthLabelAllCards, t => t.yearMonth, '年月');
+  drawTransitionChartAllCards(transitionSummary.sheet, transitionSummary.transition, '年月ごとの分類別支出推移(Vpass+楽天カード合算)');
+}
+
+// Vpassフォルダ内のCSVを読み込み、取引一覧(共通フォーマット)に変換する
+function readVpassTransactionsAllCards(vpassFiles) {
   const transactions = []; // {yearMonth, source, fileName, date, store, amount, category}
 
   vpassFiles.forEach(file => {
@@ -346,6 +387,13 @@ function classifyExpensesAllCards() {
     });
   });
 
+  return transactions;
+}
+
+// 楽天カードフォルダ内のCSVを読み込み、取引一覧(共通フォーマット)に変換する
+function readRakutenTransactionsAllCards(rakutenFiles) {
+  const transactions = []; // {yearMonth, source, fileName, date, store, amount, category}
+
   rakutenFiles.forEach(file => {
     const yearMonth = extractYearMonthFromRakutenFileNameAllCards(file.getName());
     if (!yearMonth) return; // "enaviYYYYMM(...).csv" 形式でないファイルは対象外
@@ -372,16 +420,26 @@ function classifyExpensesAllCards() {
     });
   });
 
-  // 年月(YYYYMM)の文字列としての昇順 = 時系列順。これによりVpass・楽天カードの
-  // 同じ年月のファイルが自動的に同じブロックに統合される。
-  const yearMonths = Array.from(new Set(transactions.map(t => t.yearMonth))).sort();
+  return transactions;
+}
 
-  writeDetailSheetAllCards(transactions);
-  const summary = writeSummarySheetAllCards(transactions, yearMonths);
+// カード1種類分(Vpass or 楽天カード)の「明細」「集計」「推移」タブを書き出す
+// (plot_from_vpass_csv.js / plot_from_rakten_csv.js の出力と同じ形式: ファイルごとの集計)
+function writeCardTabsAllCards(detailSheetName, summarySheetName, transitionSheetName, transactions, files, cardLabel) {
+  const fileNames = files.map(file => file.getName());
+
+  writeDetailSheetGenericAllCards(
+    detailSheetName,
+    ['ファイル名', '日付', '店舗', '金額', '分類'],
+    transactions,
+    t => [t.fileName, t.date, t.store, t.amount, t.category]
+  );
+
+  const summary = writeSummarySheetGroupedAllCards(summarySheetName, transactions, fileNames, name => name, t => t.fileName, '全ファイル合計');
   drawPieChartsAllCards(summary);
 
-  const transitionSummary = writeTransitionSheetAllCards(transactions, yearMonths);
-  drawTransitionChartAllCards(transitionSummary.sheet, transitionSummary.transition);
+  const transition = writeTransitionSheetGroupedAllCards(transitionSheetName, transactions, fileNames, name => name, t => t.fileName, 'ファイル名');
+  drawTransitionChartAllCards(transition.sheet, transition.transition, 'ファイルごとの分類別支出推移(' + cardLabel + ')');
 }
 
 // ===== CSV読み込み =====
@@ -524,38 +582,34 @@ function getOrCreateSheetAllCards(name) {
   return sheet;
 }
 
-function writeDetailSheetAllCards(transactions) {
-  const sheet = getOrCreateSheetAllCards(ALL_DETAIL_SHEET_NAME);
-  sheet.appendRow(['年月', 'カード', 'ファイル名', '日付', '店舗', '金額', '分類']);
-  const rows = transactions.map(t => [formatYearMonthLabelAllCards(t.yearMonth), t.source, t.fileName, t.date, t.store, t.amount, t.category]);
+// 明細シートを書き出す汎用関数。headers/rowMapperを変えることで、
+// カード個別タブ(ファイル名・日付・店舗・金額・分類)にも
+// 統合タブ(年月・カード・ファイル名・日付・店舗・金額・分類)にも使える。
+function writeDetailSheetGenericAllCards(sheetName, headers, transactions, rowMapper) {
+  const sheet = getOrCreateSheetAllCards(sheetName);
+  sheet.appendRow(headers);
+  const rows = transactions.map(rowMapper);
   if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, 7).setValues(rows);
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
   }
+  return sheet;
 }
 
-function writeSummarySheetAllCards(transactions, yearMonths) {
-  const sheet = getOrCreateSheetAllCards(ALL_SUMMARY_SHEET_NAME);
+// 集計シートを書き出す汎用関数。groupKeysの各要素(ファイル名 or 年月)ごとに
+// 分類・合計金額のブロックを積み上げ、最後に合計ブロックを追加する。
+function writeSummarySheetGroupedAllCards(sheetName, transactions, groupKeys, groupLabelFn, groupKeyFn, totalLabel) {
+  const sheet = getOrCreateSheetAllCards(sheetName);
   const blocks = [];
 
-  // 年月ごとに(Vpass・楽天カードを合算した)分類・合計金額のブロックを積み上げて書き出す
-  yearMonths.forEach((yearMonth, i) => {
-    const monthTransactions = transactions.filter(t => t.yearMonth === yearMonth);
-    blocks.push(writeSummaryBlockAllCards(sheet, i * ALL_SUMMARY_ROWS_PER_BLOCK + 1, formatYearMonthLabelAllCards(yearMonth), monthTransactions));
+  groupKeys.forEach((key, i) => {
+    const groupTransactions = transactions.filter(t => groupKeyFn(t) === key);
+    blocks.push(writeSummaryBlockAllCards(sheet, i * ALL_SUMMARY_ROWS_PER_BLOCK + 1, groupLabelFn(key), groupTransactions));
   });
 
-  // 最後に全期間合計のブロックを追加
-  const totalStartRow = yearMonths.length * ALL_SUMMARY_ROWS_PER_BLOCK + 1;
-  blocks.push(writeSummaryBlockAllCards(sheet, totalStartRow, '全期間合計', transactions));
+  const totalStartRow = groupKeys.length * ALL_SUMMARY_ROWS_PER_BLOCK + 1;
+  blocks.push(writeSummaryBlockAllCards(sheet, totalStartRow, totalLabel, transactions));
 
   return { sheet, blocks };
-}
-
-// 「全体推移」シート: 円グラフの集計(「全体集計」シート)とは別タブに、
-// 年月ごとの分類別推移の表+積み上げ棒グラフを書き出す
-function writeTransitionSheetAllCards(transactions, yearMonths) {
-  const sheet = getOrCreateSheetAllCards(ALL_TRANSITION_SHEET_NAME);
-  const transition = writeTransitionSectionAllCards(sheet, 1, yearMonths, transactions);
-  return { sheet, transition };
 }
 
 function writeSummaryBlockAllCards(sheet, startRow, label, transactions) {
@@ -580,22 +634,25 @@ function writeSummaryBlockAllCards(sheet, startRow, label, transactions) {
   };
 }
 
-function writeTransitionSectionAllCards(sheet, startRow, yearMonths, transactions) {
-  sheet.getRange(startRow, 1).setValue('年月ごとの推移').setFontWeight('bold');
+// 推移シートを書き出す汎用関数。groupKeys(ファイル名 or 年月)を行、
+// ALL_CATEGORY_ORDERの各分類を列とする表を書き出す。
+function writeTransitionSheetGroupedAllCards(sheetName, transactions, groupKeys, groupLabelFn, groupKeyFn, groupColumnLabel) {
+  const sheet = getOrCreateSheetAllCards(sheetName);
+  sheet.getRange(1, 1).setValue(groupColumnLabel + 'ごとの推移').setFontWeight('bold');
 
-  const headerRow = startRow + 1;
-  const columnCount = ALL_CATEGORY_ORDER.length + 1; // 年月 + 各分類
-  sheet.getRange(headerRow, 1, 1, columnCount).setValues([['年月'].concat(ALL_CATEGORY_ORDER)]);
+  const headerRow = 2;
+  const columnCount = ALL_CATEGORY_ORDER.length + 1; // groupColumnLabel + 各分類
+  sheet.getRange(headerRow, 1, 1, columnCount).setValues([[groupColumnLabel].concat(ALL_CATEGORY_ORDER)]);
 
-  // 年月ごとに、分類の並び順(ALL_CATEGORY_ORDER)に沿って合計金額を並べる(0円の分類も含める)
-  const dataRows = yearMonths.map(yearMonth => {
+  // グループごとに、分類の並び順(ALL_CATEGORY_ORDER)に沿って合計金額を並べる(0円の分類も含める)
+  const dataRows = groupKeys.map(key => {
     const totals = {};
     transactions
-      .filter(t => t.yearMonth === yearMonth)
+      .filter(t => groupKeyFn(t) === key)
       .forEach(t => {
         totals[t.category] = (totals[t.category] || 0) + t.amount;
       });
-    return [formatYearMonthLabelAllCards(yearMonth)].concat(ALL_CATEGORY_ORDER.map(category => totals[category] || 0));
+    return [groupLabelFn(key)].concat(ALL_CATEGORY_ORDER.map(category => totals[category] || 0));
   });
 
   if (dataRows.length > 0) {
@@ -603,10 +660,13 @@ function writeTransitionSectionAllCards(sheet, startRow, yearMonths, transaction
   }
 
   return {
-    headerRow: headerRow,
-    columnCount: columnCount,
-    rowCount: dataRows.length,
-    chartAnchorRow: headerRow + dataRows.length + 2,
+    sheet,
+    transition: {
+      headerRow: headerRow,
+      columnCount: columnCount,
+      rowCount: dataRows.length,
+      chartAnchorRow: headerRow + dataRows.length + 2,
+    },
   };
 }
 
@@ -637,21 +697,21 @@ function drawPieChartsAllCards(summary) {
 
 // ===== 積み上げ棒グラフ(推移) =====
 
-function drawTransitionChartAllCards(sheet, transition) {
+function drawTransitionChartAllCards(sheet, transition, title) {
   // 既存のグラフを削除してから作り直す(再実行しても増殖しないように)
   sheet.getCharts().forEach(chart => sheet.removeChart(chart));
 
-  if (transition.rowCount === 0) return; // 年月データが無ければ何もしない
+  if (transition.rowCount === 0) return; // データが無ければ何もしない
 
   const dataRange = sheet.getRange(transition.headerRow, 1, transition.rowCount + 1, transition.columnCount);
   const chart = sheet.newChart()
     .setChartType(Charts.ChartType.COLUMN)
     .addRange(dataRange)
-    // 1行目(年月, 分類1, 分類2, ...)をヘッダーとして扱い、
+    // 1行目(グループ名, 分類1, 分類2, ...)をヘッダーとして扱い、
     // 各分類名が積み上げ棒グラフのレジェンドに表示されるようにする
     .setNumHeaders(1)
     .setPosition(transition.chartAnchorRow, 1, 0, 0)
-    .setOption('title', '年月ごとの分類別支出推移(Vpass+楽天カード合算)')
+    .setOption('title', title)
     .setOption('isStacked', true)
     .setOption('legend', { position: 'right' })
     .setOption('width', 600)
