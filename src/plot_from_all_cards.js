@@ -386,6 +386,7 @@ function classifyExpensesAllCards() {
 
   const transitionSummary = writeTransitionSheetGroupedAllCards(ALL_TRANSITION_SHEET_NAME, transactions, yearMonths, formatYearMonthLabelAllCards, t => t.yearMonth, '年月');
   drawTransitionChartAllCards(transitionSummary.sheet, transitionSummary.transition, '年月ごとの分類別支出推移(Vpass+楽天カード合算)');
+  drawTransitionLineChartAllCards(transitionSummary.sheet, transitionSummary.transition, '年月ごとの分類別支出推移(折れ線・Vpass+楽天カード合算)');
 }
 
 // Vpassフォルダ内のCSVを読み込み、取引一覧(共通フォーマット)に変換する
@@ -749,6 +750,34 @@ function drawTransitionChartAllCards(sheet, transition, title) {
     .setOption('title', title)
     .setOption('isStacked', true)
     .setOption('legend', { position: 'right' })
+    .setOption('width', 600)
+    .setOption('height', 350)
+    .build();
+
+  sheet.insertChart(chart);
+}
+
+// ===== 折れ線グラフ(推移・全項目同一グラフ) =====
+
+// 積み上げ棒グラフとは別に、横軸=グループ(年月など)・縦軸=金額の折れ線グラフを
+// 全分類を同じグラフ上に重ねて描画する。drawTransitionChartAllCardsの後に呼び出す想定のため、
+// ここではグラフの削除は行わない(先に呼ばれるdrawTransitionChartAllCards側でまとめて削除される)。
+function drawTransitionLineChartAllCards(sheet, transition, title) {
+  if (transition.rowCount === 0) return; // データが無ければ何もしない
+
+  const dataRange = sheet.getRange(transition.headerRow, 1, transition.rowCount + 1, transition.columnCount);
+  const chart = sheet.newChart()
+    .setChartType(Charts.ChartType.LINE)
+    .addRange(dataRange)
+    // 1行目(グループ名, 分類1, 分類2, ...)をヘッダーとして扱い、
+    // 各分類名が折れ線グラフのレジェンド(系列名)に表示されるようにする
+    .setNumHeaders(1)
+    // 積み上げ棒グラフの下に配置されるよう、十分な行数だけアンカー行をずらす
+    .setPosition(transition.chartAnchorRow + 20, 1, 0, 0)
+    .setOption('title', title)
+    .setOption('legend', { position: 'right' })
+    .setOption('hAxis', { title: '年月' })
+    .setOption('vAxis', { title: '金額' })
     .setOption('width', 600)
     .setOption('height', 350)
     .build();
