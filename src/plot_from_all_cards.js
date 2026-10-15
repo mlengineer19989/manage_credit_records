@@ -386,7 +386,7 @@ function classifyExpensesAllCards() {
 
   const transitionSummary = writeTransitionSheetGroupedAllCards(ALL_TRANSITION_SHEET_NAME, transactions, yearMonths, formatYearMonthLabelAllCards, t => t.yearMonth, '年月');
   drawTransitionChartAllCards(transitionSummary.sheet, transitionSummary.transition, '年月ごとの分類別支出推移(Vpass+楽天カード合算)');
-  drawTransitionLineChartAllCards(transitionSummary.sheet, transitionSummary.transition, '年月ごとの分類別支出推移(折れ線・Vpass+楽天カード合算)');
+  drawTransitionLineChartAllCards(transitionSummary.sheet, transitionSummary.transition, '年月ごとの推移(折れ線)');
 }
 
 // Vpassフォルダ内のCSVを読み込み、取引一覧(共通フォーマット)に変換する
@@ -757,32 +757,49 @@ function drawTransitionChartAllCards(sheet, transition, title) {
   sheet.insertChart(chart);
 }
 
-// ===== 折れ線グラフ(推移・全項目同一グラフ) =====
+// ===== 折れ線グラフ(推移・分類ごとに個別グラフ) =====
 
 // 積み上げ棒グラフとは別に、横軸=グループ(年月など)・縦軸=金額の折れ線グラフを
-// 全分類を同じグラフ上に重ねて描画する。drawTransitionChartAllCardsの後に呼び出す想定のため、
-// ここではグラフの削除は行わない(先に呼ばれるdrawTransitionChartAllCards側でまとめて削除される)。
-function drawTransitionLineChartAllCards(sheet, transition, title) {
+// 分類(ALL_CATEGORY_ORDER)ごとに1つずつ、グリッド状に並べて描画する。
+// drawTransitionChartAllCardsの後に呼び出す想定のため、ここではグラフの削除は行わない
+// (先に呼ばれるdrawTransitionChartAllCards側でまとめて削除される)。
+function drawTransitionLineChartAllCards(sheet, transition, titlePrefix) {
   if (transition.rowCount === 0) return; // データが無ければ何もしない
 
-  const dataRange = sheet.getRange(transition.headerRow, 1, transition.rowCount + 1, transition.columnCount);
-  const chart = sheet.newChart()
-    .setChartType(Charts.ChartType.LINE)
-    .addRange(dataRange)
-    // 1行目(グループ名, 分類1, 分類2, ...)をヘッダーとして扱い、
-    // 各分類名が折れ線グラフのレジェンド(系列名)に表示されるようにする
-    .setNumHeaders(1)
-    // 積み上げ棒グラフの下に配置されるよう、十分な行数だけアンカー行をずらす
-    .setPosition(transition.chartAnchorRow + 20, 1, 0, 0)
-    .setOption('title', title)
-    .setOption('legend', { position: 'right' })
-    .setOption('hAxis', { title: '年月' })
-    .setOption('vAxis', { title: '金額' })
-    .setOption('width', 600)
-    .setOption('height', 350)
-    .build();
+  const CHARTS_PER_ROW = 3; // 1行あたりに並べるグラフの数
+  const COLUMN_GAP = 7; // グラフ同士の列方向の間隔
+  const ROW_GAP = 14; // グラフ同士の行方向の間隔
+  const baseRow = transition.chartAnchorRow + 20; // 積み上げ棒グラフの下に配置されるよう行をずらす
 
-  sheet.insertChart(chart);
+  // グループ名(年月・ファイル名など)の列(1列目)は全グラフで共通のラベル(横軸)として使う
+  const labelRange = sheet.getRange(transition.headerRow, 1, transition.rowCount + 1, 1);
+
+  ALL_CATEGORY_ORDER.forEach((category, i) => {
+    const categoryColumn = i + 2; // 1列目がグループ名のため、分類の列は2列目から
+    const valueRange = sheet.getRange(transition.headerRow, categoryColumn, transition.rowCount + 1, 1);
+
+    const gridRow = Math.floor(i / CHARTS_PER_ROW);
+    const gridColumn = i % CHARTS_PER_ROW;
+    const anchorRow = baseRow + gridRow * ROW_GAP;
+    const anchorColumn = 1 + gridColumn * COLUMN_GAP;
+
+    const chart = sheet.newChart()
+      .setChartType(Charts.ChartType.LINE)
+      .addRange(labelRange)
+      .addRange(valueRange)
+      // 1行目(グループ名, 分類名)をヘッダーとして扱う
+      .setNumHeaders(1)
+      .setPosition(anchorRow, anchorColumn, 0, 0)
+      .setOption('title', titlePrefix + ': ' + category)
+      .setOption('legend', { position: 'none' })
+      .setOption('hAxis', { title: '年月' })
+      .setOption('vAxis', { title: '金額' })
+      .setOption('width', 400)
+      .setOption('height', 250)
+      .build();
+
+    sheet.insertChart(chart);
+  });
 }
 
 // ===== デバッグ用 =====
